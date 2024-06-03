@@ -4,7 +4,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use server::ThreadPool;
+use webserver::ThreadPool;
 
 fn main() {
 
@@ -32,10 +32,10 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Er
     let request_line = buf_reader.lines().next().ok_or("Failed to read request line")??;
 
     let (status_line, filename) = match &request_line[..] {
-        "GET / HTTP/1.1" => ("HTTP/1.1 200 OK", "webpages/hello.html"),
+        "GET / HTTP/1.1" => ("HTTP/1.1 200 OK", "../webpages/hello.html"),
         "GET /sleep HTTP/1.1" => {
             thread::sleep(Duration::from_secs(5));
-            ("HTTP/1.1 200 OK", "webpages/hello.html")
+            ("HTTP/1.1 200 OK", "../webpages/hello.html")
         }
         _ => ("HTTP/1.1 400 NOT FOUND", "webpages/404.html"),
     };
