@@ -1,38 +1,57 @@
 use std::sync::{Arc, mpsc, Mutex};
-use std::sync::mpsc::Receiver;
 use std::thread;
 
 struct Worker {
     id: usize,
-    thread: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
         let thread = thread::spawn(move || loop {
-            let job = receiver.lock().unwrap().recv().unwrap();
-            println!("worker {id} got a job; executing.");
-            job()
+            let message = receiver.lock().unwrap().recv();
+
+            match message {
+                Ok(job) => {
+                    println!("worker {id} got a job; executing.");
+                    job();
+                }
+                Err(_) => {
+                    println!("worker {id} is disconnected; shutting down.");
+                    break;
+                }
+            }
         });
 
-        Worker { id, thread }
+        Worker { id, thread: Some(thread) }
     }
 }
 
-// struct Job;
 
 // type alias
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
+/// A pool of threads to execute jobs concurrently.
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: Option<mpsc::Sender<Job>>,
 }
 
-#[derive(Debug)]
-pub enum PoolCreationError {
-    SizeZero,
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+        for worker in &mut self.workers {
+            println!("shutting down worker {}", worker.id);
+
+            if let Some(thread) = worker.thread.take() {
+                if let Err(e) = thread.join() {
+                    eprintln!("Failed to join worker thread: {:?}", e);
+                }
+            }
+        }
+    }
 }
+
 
 impl ThreadPool {
     /// Create a new ThreadPool.
@@ -56,22 +75,29 @@ impl ThreadPool {
             workers.push(Worker::new(id, Arc::clone(&receiver)));
         }
 
-        ThreadPool { workers, sender }
+        ThreadPool { workers, sender: Some(sender) }
     }
 
-    pub fn build(size: usize) -> Result<ThreadPool, PoolCreationError> {
-        if size > 0 {
-            Ok(ThreadPool::new(size))
-        } else {
-            Err(PoolCreationError::SizeZero)
-        }
-    }
-
+    /// Sends a job to the thread pool for execution.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use server::ThreadPool;
+    ///
+    /// let pool = ThreadPool::new(4);
+    ///
+    /// pool.execute(|| {
+    ///     println!("Executing a job");
+    /// });
+    /// ```
     pub fn execute<F>(&self, f: F)
         where F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
-        self.sender.send(job).unwrap();
+        if let Err(e) = self.sender.as_ref().unwrap().send(job) {
+            eprintln!("Failed to send job to the worker: {}", e);
+        }
     }
 }
 
@@ -80,5 +106,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {}
+    fn test_thread_pool_creation() {
+        let pool = ThreadPool::new(4);
+        assert_eq!(pool.workers.len(), 4);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_thread_pool_creation_with_zero_size() {
+        ThreadPool::new(0);
+    }
+
+    #[test]
+    fn test_thread_pool_execute() {
+        let pool = ThreadPool::new(4);
+        let (tx, rx) = mpsc::channel();
+
+        pool.execute(move || {
+            tx.send(true).expect("Failed to send message");
+        });
+
+        assert!(rx.recv().expect("Failed to receive message"));
+    }
 }
+
+
+
+
